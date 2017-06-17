@@ -33,7 +33,7 @@ impl Curve {
         let alpha = (wanted_key - pre_key) as f64 / (post_key - pre_key) as f64;
         let pre_value_f = *pre_value as f64;
         let post_value_f = *post_value as f64;
-        return (alpha * pre_value_f + (1.0 - alpha) * post_value_f) as Keyframe;
+        return ((1.0 - alpha) * pre_value_f + alpha * post_value_f) as Keyframe;
     }
 }
 
@@ -52,5 +52,7 @@ mod tests {
         assert_eq!(c.value_at(&6), 600);
 
         assert_eq!(c.value_at(&2), 200);
+        assert_eq!(c.value_at(&4), 400);
+        assert_eq!(c.value_at(&5), 500);
     }
 }
