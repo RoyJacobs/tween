@@ -2,25 +2,38 @@ use std::collections::BTreeMap;
 use std::collections::Bound::*;
 
 type Position = i64;
+type Keyframe<'a, T> = (&'a Position, &'a T);
 
 pub struct Curve<T> {
     points: BTreeMap<Position, T>
 }
 
-pub trait Interpolatable<T> {
-    fn interpolate(&self, wanted_key: &Position, pre_key: &Position, post_key: &Position, pre_value: &T, post_value: &T) -> T;
+pub trait Interpolatable<'a, T> {
+    fn interpolate(wanted_key: &Position, back: &mut Iterator<Item=Keyframe<'a, T>>, forward: &mut Iterator<Item=Keyframe<'a, T>>) -> T;
 }
 
-impl Interpolatable<i64> for i64 {
-    fn interpolate(&self, wanted_key: &Position, pre_key: &Position, post_key: &Position, pre_value: &i64, post_value: &i64) -> i64 {
-        let alpha = (wanted_key - pre_key) as f64 / (post_key - pre_key) as f64;
-        let pre_value_f = *pre_value as f64;
-        let post_value_f = *post_value as f64;
-        return ((1.0 - alpha) * pre_value_f + alpha * post_value_f) as i64;
+fn get_linear_interpolator<'a, T>(wanted_key: &Position, back: &mut Iterator<Item=Keyframe<'a, T>>, forward: &mut Iterator<Item=Keyframe<'a, T>>) -> (f64, &'a T, &'a T) {
+    let pre = back.next().unwrap();
+
+    if pre.0 == wanted_key {
+        return (0.0, pre.1, pre.1);
     }
+
+    let post = forward.next().unwrap();
+
+    let alpha = (wanted_key - pre.0) as f64 / (post.0 - pre.0) as f64;
+    return (alpha, pre.1, post.1);
 }
 
-impl<T: Interpolatable<T> + Clone> Curve<T> {
+impl<'a> Interpolatable<'a, i64> for i64 {
+    fn interpolate(wanted_key: &Position, back: &mut Iterator<Item=Keyframe<'a, i64>>, forward: &mut Iterator<Item=Keyframe<'a, i64>>) -> i64 {
+        let i = get_linear_interpolator(wanted_key, back, forward);
+        return ((1.0 - i.0) * (*i.1 as f64) + i.0 * (*i.2 as f64)) as i64;
+    }
+    
+}
+
+impl<'a, T: Interpolatable<'a, T> + Clone> Curve<T> where T: Sized {
     pub fn new() -> Curve<T> {
         Curve {
             points: BTreeMap::new()
@@ -31,18 +44,11 @@ impl<T: Interpolatable<T> + Clone> Curve<T> {
         self.points.insert(key, value);
     }
 
-    pub fn value_at(&self, wanted_key: &Position) -> T {
+    pub fn value_at(&'a self, wanted_key: &Position) -> T {
         let mut pre_range = self.points.range((Unbounded, Included(wanted_key)));
-        let (pre_key, pre_value) = pre_range.next_back().unwrap();
-
-        if pre_key == wanted_key {
-            return pre_value.clone();
-        }
-
         let mut post_range = self.points.range((Included(wanted_key), Unbounded));
-        let (post_key, post_value) = post_range.next().unwrap();
-
-        return (*pre_value).interpolate(wanted_key, pre_key, post_key, pre_value, post_value);
+        
+        T::interpolate(wanted_key, pre_range.by_ref(), post_range.by_ref())
     }
 }
 
