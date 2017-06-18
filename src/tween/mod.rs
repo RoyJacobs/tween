@@ -10,56 +10,46 @@ pub struct Curve<T, IP> {
     interpolator: PhantomData<IP>
 }
 
+pub trait Interpolatable<'a, T> {
+    fn scale(val: &T, amount: f64) -> T;
+    fn add(x: T, y: T) -> T;
+}
+
+impl<'a> Interpolatable<'a, f64> for f64 {
+    fn scale(val: &f64, amount: f64) -> f64 {
+        *val * amount
+    }
+
+    fn add(x: f64, y: f64) -> f64 {
+        x + y
+    }
+}
+
 pub trait Interpolator {
-    fn get<'a, T>(wanted_key: &Position, back: &mut Iterator<Item=Keyframe<'a, T>>, forward: &mut Iterator<Item=Keyframe<'a, T>>) -> (f64, &'a T, &'a T);
+    fn get<'a, T: Interpolatable<'a, T>>(time: f64, duration: f64, pre: &Keyframe<T>, post: &Keyframe<T>) -> T;
 }
 
 pub struct LinearInterpolator {}
 pub struct HoldInterpolator {}
 
 impl Interpolator for LinearInterpolator {
-    fn get<'a, T>(wanted_key: &Position, back: &mut Iterator<Item=Keyframe<'a, T>>, forward: &mut Iterator<Item=Keyframe<'a, T>>) -> (f64, &'a T, &'a T) {
-        if let Some(post) = forward.next() {
-            if wanted_key == post.0 {
-                return (0.0, post.1, post.1)
-            } else {
-                let pre = back.next().unwrap();
-                let alpha = (wanted_key - pre.0) as f64 / (post.0 - pre.0) as f64;
-                return (alpha, pre.1, post.1);
-            }
-        }
+    fn get<'a, T: Interpolatable<'a, T>>(time: f64, duration: f64, pre: &Keyframe<T>, post: &Keyframe<T>) -> T {
+        let alpha = time / duration;
 
-        panic!("too far")
+        let p1 = T::scale(pre.1, 1.0 - alpha);
+        let p2 = T::scale(post.1, alpha);
+
+        return T::add(p1, p2);
     }
 }
 
 impl Interpolator for HoldInterpolator {
-    fn get<'a, T>(wanted_key: &Position, back: &mut Iterator<Item=Keyframe<'a, T>>, forward: &mut Iterator<Item=Keyframe<'a, T>>) -> (f64, &'a T, &'a T) {
-        if let Some(post) = forward.next() {
-            if wanted_key == post.0 {
-                return (0.0, post.1, post.1)
-            }
-        }
-        
-        match back.next() {
-            Some(pre) => (0.0, pre.1, pre.1),
-            None => panic!("Too far")
-        }
+    fn get<'a, T: Interpolatable<'a, T>>(_: f64, _: f64, pre: &Keyframe<T>, _: &Keyframe<T>) -> T {
+        return T::scale(pre.1, 1.0);
     }
 }
 
-pub trait Interpolatable<'a, T, IP> where IP: Interpolator {
-    fn interpolate(wanted_key: &Position, back: &mut Iterator<Item=Keyframe<'a, T>>, forward: &mut Iterator<Item=Keyframe<'a, T>>) -> T;
-}
-
-impl<'a, IP> Interpolatable<'a, i64, IP> for i64 where IP: Interpolator {
-    fn interpolate(wanted_key: &Position, back: &mut Iterator<Item=Keyframe<'a, i64>>, forward: &mut Iterator<Item=Keyframe<'a, i64>>) -> i64 {
-        let i = IP::get(wanted_key, back, forward);
-        return ((1.0 - i.0) * (*i.1 as f64) + i.0 * (*i.2 as f64)) as i64;
-    }
-}
-
-impl<'a, T, IP> Curve<T, IP> where T: Sized + Interpolatable<'a, T, IP>, IP: Interpolator {
+impl<'a, T, IP> Curve<T, IP> where T: Clone + Interpolatable<'a, T>, IP: Interpolator {
     pub fn new() -> Curve<T, IP> {
         Curve {
             points: BTreeMap::new(),
@@ -72,10 +62,21 @@ impl<'a, T, IP> Curve<T, IP> where T: Sized + Interpolatable<'a, T, IP>, IP: Int
     }
 
     pub fn value_at(&'a self, wanted_key: &Position) -> T {
-        let pre_range = self.points.range((Unbounded, Excluded(wanted_key)));
         let mut post_range = self.points.range((Included(wanted_key), Unbounded));
-        
-        T::interpolate(wanted_key, pre_range.rev().by_ref(), post_range.by_ref())
+        if let Some(post) = post_range.next() {
+            if wanted_key == post.0 {
+                return (*post.1).clone();
+            }
+
+            let mut pre_range = self.points.range((Unbounded, Excluded(wanted_key)));
+            let pre = pre_range.next_back().unwrap();
+
+            let time = (wanted_key - pre.0) as f64;
+            let duration = (post.0 - pre.0) as f64;
+            return IP::get(time, duration, &pre, &post);
+        }
+
+        panic!("too far");
     }
 }
 
@@ -85,31 +86,31 @@ mod tests {
 
     #[test]
     fn linear_interpolation_works() {
-        let mut c: Curve<i64, LinearInterpolator> = Curve::new();
-        c.set(1, 100);
-        c.set(3, 300);
-        c.set(6, 600);
-        assert_eq!(c.value_at(&1), 100);
-        assert_eq!(c.value_at(&3), 300);
-        assert_eq!(c.value_at(&6), 600);
+        let mut c: Curve<f64, LinearInterpolator> = Curve::new();
+        c.set(1, 100.0);
+        c.set(3, 300.0);
+        c.set(6, 600.0);
+        assert_eq!(c.value_at(&1), 100.0);
+        assert_eq!(c.value_at(&3), 300.0);
+        assert_eq!(c.value_at(&6), 600.0);
 
-        assert_eq!(c.value_at(&2), 200);
-        assert_eq!(c.value_at(&4), 400);
-        assert_eq!(c.value_at(&5), 500);
+        assert_eq!(c.value_at(&2), 200.0);
+        assert_eq!(c.value_at(&4), 400.0);
+        assert_eq!(c.value_at(&5), 500.0);
     }
 
     #[test]
     fn hold_interpolation_works() {
-        let mut c: Curve<i64, HoldInterpolator> = Curve::new();
-        c.set(1, 100);
-        c.set(3, 300);
-        c.set(6, 600);
-        assert_eq!(c.value_at(&1), 100);
-        assert_eq!(c.value_at(&3), 300);
-        assert_eq!(c.value_at(&6), 600);
+        let mut c: Curve<f64, HoldInterpolator> = Curve::new();
+        c.set(1, 100.0);
+        c.set(3, 300.0);
+        c.set(6, 600.0);
+        assert_eq!(c.value_at(&1), 100.0);
+        assert_eq!(c.value_at(&3), 300.0);
+        assert_eq!(c.value_at(&6), 600.0);
 
-        assert_eq!(c.value_at(&2), 100);
-        assert_eq!(c.value_at(&4), 300);
-        assert_eq!(c.value_at(&5), 300);
+        assert_eq!(c.value_at(&2), 100.0);
+        assert_eq!(c.value_at(&4), 300.0);
+        assert_eq!(c.value_at(&5), 300.0);
     }
 }
