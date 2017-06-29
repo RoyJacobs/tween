@@ -3,65 +3,71 @@ use std::collections::Bound::*;
 use std::marker::PhantomData;
 
 type Position = i64;
+type Time = f64;
 type Keyframe<'a, T> = (&'a Position, &'a T);
 
-pub struct Curve<T, IP> {
-    points: BTreeMap<Position, T>,
-    interpolator: PhantomData<IP>
+pub trait Curve<T> {
+    fn set(&mut self, key: Position, value: T);
+    fn value_at(&self, wanted_key: &Position) -> T;
 }
 
 pub trait Interpolatable<'a, T> {
-    fn scale(val: &T, amount: f64) -> T;
-    fn add(x: T, y: T) -> T;
+    fn interpolate(pre: &Keyframe<T>, post: &Keyframe<T>, time: Time) -> T;
 }
 
 impl<'a> Interpolatable<'a, f64> for f64 {
-    fn scale(val: &f64, amount: f64) -> f64 {
-        *val * amount
-    }
+    fn interpolate(pre: &Keyframe<f64>, post: &Keyframe<f64>, time: Time) -> f64 {
+        if pre.0 == post.0 {
+            return *pre.1;
+        }
 
-    fn add(x: f64, y: f64) -> f64 {
-        x + y
+        let alpha = (time - (*pre.0 as Time)) / ((post.0 - pre.0) as Time);
+        let p1 = pre.1 * (1.0 - alpha);
+        let p2 = post.1 * alpha;
+        return p1 + p2;
     }
 }
 
 pub trait Interpolator {
-    fn get<'a, T: Interpolatable<'a, T>>(time: f64, duration: f64, pre: &Keyframe<T>, post: &Keyframe<T>) -> T;
+    fn get<'a, T: Interpolatable<'a, T>>(pre: &Keyframe<T>, post: &Keyframe<T>, time: Time) -> T;
 }
 
-pub struct LinearInterpolator {}
-pub struct HoldInterpolator {}
+pub struct LinearInterpolator;
+pub struct HoldInterpolator;
 
 impl Interpolator for LinearInterpolator {
-    fn get<'a, T: Interpolatable<'a, T>>(time: f64, duration: f64, pre: &Keyframe<T>, post: &Keyframe<T>) -> T {
-        let alpha = time / duration;
+    fn get<'a, T: Interpolatable<'a, T>>(pre: &Keyframe<T>, post: &Keyframe<T>, time: Time) -> T {
+        return T::interpolate(pre, post, time);
 
-        let p1 = T::scale(pre.1, 1.0 - alpha);
-        let p2 = T::scale(post.1, alpha);
-
-        return T::add(p1, p2);
     }
 }
 
 impl Interpolator for HoldInterpolator {
-    fn get<'a, T: Interpolatable<'a, T>>(_: f64, _: f64, pre: &Keyframe<T>, _: &Keyframe<T>) -> T {
-        return T::scale(pre.1, 1.0);
+    fn get<'a, T: Interpolatable<'a, T>>(pre: &Keyframe<T>, _: &Keyframe<T>, _: Time) -> T {
+        return T::interpolate(pre, pre, *pre.0 as Time);
     }
 }
 
-impl<'a, T, IP> Curve<T, IP> where T: Clone + Interpolatable<'a, T>, IP: Interpolator {
-    pub fn new() -> Curve<T, IP> {
-        Curve {
-            points: BTreeMap::new(),
-            interpolator: PhantomData,
-        }
-    }
+pub struct BTreeCurve<T, IP: Interpolator> {
+    points: BTreeMap<Position, T>,
+    interpolator: PhantomData<IP>
+}
 
-    pub fn set(&mut self, key: Position, value: T) {
+impl <'a, T, IP> BTreeCurve<T, IP> where T: Clone + Interpolatable<'a, T> + 'static, IP: Interpolator + 'static {
+    pub fn new() -> Box<Curve<T>> {
+        return Box::new(BTreeCurve::<T, IP> {
+            points: BTreeMap::new(),
+            interpolator: PhantomData
+        });
+    }
+}
+
+impl <'a, T, IP> Curve<T> for BTreeCurve<T, IP> where T: Clone + Interpolatable<'a, T>, IP: Interpolator {
+    fn set(&mut self, key: Position, value: T) {
         self.points.insert(key, value);
     }
 
-    pub fn value_at(&'a self, wanted_key: &Position) -> T {
+    fn value_at(&self, wanted_key: &Position) -> T {
         let mut post_range = self.points.range((Included(wanted_key), Unbounded));
         if let Some(post) = post_range.next() {
             if wanted_key == post.0 {
@@ -71,9 +77,7 @@ impl<'a, T, IP> Curve<T, IP> where T: Clone + Interpolatable<'a, T>, IP: Interpo
             let mut pre_range = self.points.range((Unbounded, Excluded(wanted_key)));
             let pre = pre_range.next_back().unwrap();
 
-            let time = (wanted_key - pre.0) as f64;
-            let duration = (post.0 - pre.0) as f64;
-            return IP::get(time, duration, &pre, &post);
+            return IP::get(&pre, &post, *wanted_key as Time);
         }
 
         panic!("too far");
@@ -86,7 +90,7 @@ mod tests {
 
     #[test]
     fn linear_interpolation_works() {
-        let mut c: Curve<f64, LinearInterpolator> = Curve::new();
+        let mut c = BTreeCurve::<f64, LinearInterpolator>::new();
         c.set(1, 100.0);
         c.set(3, 300.0);
         c.set(6, 600.0);
@@ -101,7 +105,7 @@ mod tests {
 
     #[test]
     fn hold_interpolation_works() {
-        let mut c: Curve<f64, HoldInterpolator> = Curve::new();
+        let mut c = BTreeCurve::<f64, HoldInterpolator>::new();
         c.set(1, 100.0);
         c.set(3, 300.0);
         c.set(6, 600.0);
