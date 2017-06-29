@@ -1,10 +1,42 @@
 use std::collections::BTreeMap;
 use std::collections::Bound::*;
 use std::marker::PhantomData;
+use std::ops::{Add, Mul};
 
 type Position = i64;
 type Time = f64;
 type Keyframe<'a, T> = (&'a Position, &'a T);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Vector {
+    x: f64,
+    y: f64,
+    z: f64
+}
+
+impl Add for Vector {
+    type Output = Vector;
+
+    fn add(self, rhs: Vector) -> Vector {
+        Vector {
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+            z: self.z + rhs.z
+        }
+    }
+}
+
+impl<'a> Mul<f64> for &'a Vector {
+    type Output = Vector;
+
+    fn mul(self, other: f64) -> Vector {
+        Vector {
+            x: self.x * other,
+            y: self.y * other,
+            z: self.z * other
+        }
+    }
+}
 
 pub trait Curve<T> {
     fn set(&mut self, key: Position, value: T);
@@ -17,6 +49,19 @@ pub trait Interpolatable<'a, T> {
 
 impl<'a> Interpolatable<'a, f64> for f64 {
     fn interpolate(pre: &Keyframe<f64>, post: &Keyframe<f64>, time: Time) -> f64 {
+        if pre.0 == post.0 {
+            return *pre.1;
+        }
+
+        let alpha = (time - (*pre.0 as Time)) / ((post.0 - pre.0) as Time);
+        let p1 = pre.1 * (1.0 - alpha);
+        let p2 = post.1 * alpha;
+        return p1 + p2;
+    }
+}
+
+impl<'a> Interpolatable<'a, Vector> for Vector {
+    fn interpolate(pre: &Keyframe<Vector>, post: &Keyframe<Vector>, time: Time) -> Vector {
         if pre.0 == post.0 {
             return *pre.1;
         }
@@ -117,4 +162,20 @@ mod tests {
         assert_eq!(c.value_at(&4), 300.0);
         assert_eq!(c.value_at(&5), 300.0);
     }
+
+    #[test]
+    fn linear_interpolation_works_for_vectors() {
+        let mut c = BTreeCurve::<Vector, LinearInterpolator>::new();
+        c.set(1, Vector { x: 100.0, y: 1000.0, z: 10000.0 });
+        c.set(3, Vector { x: 300.0, y: 3000.0, z: 30000.0 });
+        c.set(6, Vector { x: 600.0, y: 6000.0, z: 60000.0 });
+        assert_eq!(c.value_at(&1), Vector { x: 100.0, y: 1000.0, z: 10000.0 });
+        assert_eq!(c.value_at(&3), Vector { x: 300.0, y: 3000.0, z: 30000.0 });
+        assert_eq!(c.value_at(&6), Vector { x: 600.0, y: 6000.0, z: 60000.0 });
+
+        assert_eq!(c.value_at(&2), Vector { x: 200.0, y: 2000.0, z: 20000.0 });
+        assert_eq!(c.value_at(&4), Vector { x: 400.0, y: 4000.0, z: 40000.0 });
+        assert_eq!(c.value_at(&5), Vector { x: 500.0, y: 5000.0, z: 50000.0 });
+    }
+
 }
